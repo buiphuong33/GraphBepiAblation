@@ -120,6 +120,12 @@ if __name__ == "__main__":
         default='./data/BCE_633',
         help='dataset path'
     )
+    parser.add_argument(
+        '--csv',
+        type=str,
+        required=True,
+        help='path to total.csv'
+    )
     args = parser.parse_args()
 
     root = args.root
@@ -141,7 +147,7 @@ if __name__ == "__main__":
     # --------------------------------------------------------
     # Build dataset from total.csv (NO ESM)
     # --------------------------------------------------------
-    csv_path = 'total.csv'
+    csv_path = args.csv
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"[ERROR] {csv_path} not found")
 
