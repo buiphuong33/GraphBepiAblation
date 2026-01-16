@@ -1,3 +1,4 @@
+# merge_tabular_and_gnn.py
 import os
 import argparse
 import numpy as np

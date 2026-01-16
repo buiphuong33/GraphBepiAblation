@@ -106,13 +106,14 @@ class chain:
         self.coord=torch.FloatTensor(self.coord)
         self.label=torch.zeros_like(self.amino)
         self.sequence=''.join(self.sequence)
-    def extract(self,model,device,path):
-        if len(self)>1024 or model is None:
-            return
-        f=lambda x:model(x.to(device).unsqueeze(0),[36])['representations'][36].squeeze(0).cpu()
-        with torch.no_grad():
-            feat=f(self.amino)
-        torch.save(feat,f'{path}/feat/{self.name}_esm2.ts')
+    def extract(self,model=None,device=None,path=None):
+        # if len(self)>1024 or model is None:
+        #     return
+        # f=lambda x:model(x.to(device).unsqueeze(0),[36])['representations'][36].squeeze(0).cpu()
+        # with torch.no_grad():
+        #     feat=f(self.amino)
+        # torch.save(feat,f'{path}/feat/{self.name}_esm2.ts')
+        return 
     def load_dssp(self, path):
         dssp = torch.Tensor(np.load(f'{path}/dssp/{self.name}.npy'))
         pos  = np.load(f'{path}/dssp/{self.name}_pos.npy')
@@ -166,7 +167,8 @@ class chain:
             print(f"[WARN] DSSP mapping missed {missed} residues for {self.name}")
 
     def load_feat(self,path):
-        self.feat=torch.load(f'{path}/feat/{self.name}_esm2.ts')
+        #self.feat=torch.load(f'{path}/feat/{self.name}_esm2.ts')
+        raise RuntimeError("ESM features are disabled in DSSP-only ablation")
     def load_adj(self,path,self_cycle=False):
         graph=torch.load(f'{path}/graph/{self.name}.graph')
         self.adj=graph['adj'].to_dense()
@@ -203,11 +205,11 @@ class chain:
         return self.length
     def __getitem__(self,idx):
         return self.amino[idx],self.coord[idx],self.label[idx]
-def collate_fn(batch):
-    edges = [item['edge'] for item in batch]
-    feats = [item['feat'] for item in batch]
-    labels = torch.cat([item['label'] for item in batch],0)
-    return feats,edges,labels
+# def collate_fn(batch):
+#     edges = [item['edge'] for item in batch]
+#     feats = [item['feat'] for item in batch]
+#     labels = torch.cat([item['label'] for item in batch],0)
+#     return feats,edges,labels
 
 def extract_chain(root,pid,chain,force=False):
     if not force and os.path.exists(f'{root}/purePDB/{pid}_{chain}.pdb'):
@@ -258,7 +260,7 @@ def process_chain(data,root,pid,model,device):
             data.add(amino,site,[x,y,z])
     data.process()
     data.get_adj(root)
-    data.extract(model,device,root)
+    #data.extract(model,device,root)
     return data
 def initial(file,root,model=None,device='cpu',from_native_pdb=True):
     df=pd.read_csv(f'{root}/{file}',header=0,index_col=0)
@@ -326,21 +328,21 @@ def export_tabular(root, out_dir="./tabular", split='all'):
     for s in tqdm(samples, desc='Exporting residues'):
         # ensure features loaded
         try:
-            s.load_feat(root)
+            # s.load_feat(root)
             s.load_dssp(root)
             s.load_adj(root,self_cycle=False)
         except Exception as e:
             print(f"[WARN] Failed to load features for {s.name}: {e}")
             continue
         L = len(s)
-        feat = s.feat.numpy() if isinstance(s.feat, torch.Tensor) else np.array(s.feat)
+        # feat = s.feat.numpy() if isinstance(s.feat, torch.Tensor) else np.array(s.feat)
         dssp = s.dssp.numpy() if isinstance(s.dssp, torch.Tensor) else np.array(s.dssp)
         adj = s.adj.numpy() if isinstance(s.adj, torch.Tensor) else np.array(s.adj)
         edge = s.edge.numpy() if isinstance(s.edge, torch.Tensor) else np.array(s.edge)
         amino_ids = s.amino.numpy() if isinstance(s.amino, torch.Tensor) else np.array(s.amino)
 
         for i in range(L):
-            esm_i = feat[i]
+            # esm_i = feat[i]
             dssp_i = dssp[i]
             deg = float(adj[i].sum())
             # neighbor mean edge features
@@ -350,7 +352,7 @@ def export_tabular(root, out_dir="./tabular", split='all'):
             else:
                 neigh_edge_mean = np.zeros(edge.shape[2], dtype=np.float32)
             amino_id = float(amino_ids[i])
-            x = np.concatenate([esm_i.astype(np.float32), dssp_i.astype(np.float32), np.array([deg], dtype=np.float32), neigh_edge_mean.astype(np.float32), np.array([amino_id], dtype=np.float32)])
+            x = np.concatenate([dssp_i.astype(np.float32), np.array([deg], dtype=np.float32), neigh_edge_mean.astype(np.float32), np.array([amino_id], dtype=np.float32)])
             rows_X.append(x)
             rows_y.append(float(s.label[i].item() if isinstance(s.label, torch.Tensor) else s.label[i]))
             rows_name.append(s.name)
@@ -366,6 +368,103 @@ def export_tabular(root, out_dir="./tabular", split='all'):
     np.savez_compressed(out_path, X=X, y=y, names=names, idxs=idxs, resn=resn)
     print(f"[DONE] Exported {X.shape[0]} residues to {out_path}")
     return out_path
+
+def initial_no_esm(csv_path, root, from_native_pdb=True, force=False):
+    """
+    Build dataset WITHOUT ESM features.
+    Output: root/total.pkl
+    Require: DSSP + graph construction
+    """
+
+    import pandas as pd
+    import pickle as pk
+    from tqdm import tqdm
+
+    df = pd.read_csv(csv_path, header=0, index_col=0)
+    prefix = df.index
+    labels = df['Epitopes (resi_resn)']
+
+    samples = []
+
+    with tqdm(prefix, desc="Building dataset (no ESM)") as tbar:
+        for i in tbar:
+            tbar.set_postfix(protein=i)
+
+            pid = i[:4]
+            chain_id = i[-1]
+
+            # 1) download + extract chain
+            if from_native_pdb:
+                ok = extract_chain(root, pid, chain_id, force=force)
+                if not ok:
+                    continue
+
+            data = chain()
+            data.protein_name = pid
+            data.chain_name = chain_id
+            data.name = f"{pid}_{chain_id}"
+
+            # 2) parse PDB, build coord + sequence + graph
+            get_dssp(pid, root)
+            same = {}
+
+            pdb_path = f"{root}/purePDB/{pid}_{chain_id}.pdb"
+            if not os.path.exists(pdb_path):
+                print(f"[SKIP] missing {pdb_path}")
+                continue
+
+            with open(pdb_path, 'r') as f:
+                for line in f:
+                    if line[:6] == 'HEADER':
+                        data.date = line[50:59].strip()
+                        continue
+
+                    feats = judge(line, 'CA')
+                    if feats is None:
+                        continue
+
+                    amino, _, site, x, y, z = feats
+
+                    if len(amino) > 3:
+                        if same.get(site) is None:
+                            same[site] = amino[0]
+                        if same[site] != amino[0]:
+                            continue
+                        amino = amino[-3:]
+
+                    data.add(amino, site, [x, y, z])
+
+            if len(data) == 0:
+                continue
+
+            data.process()
+
+            # 3) graph
+            data.get_adj(root)
+
+            # 4) DSSP
+            try:
+                data.load_dssp(root)
+            except Exception as e:
+                print(f"[SKIP] DSSP failed {data.name}: {e}")
+                continue
+
+            # 5) label residues
+            label = labels.loc[i].split(', ')
+            for j in label:
+                site, amino = j.split('_')
+                data.update(site, amino)
+
+            if data.label.sum() == 0:
+                continue
+
+            samples.append(data)
+
+    # 6) save
+    with open(f'{root}/total.pkl', 'wb') as f:
+        pk.dump(samples, f)
+
+    print(f"[DONE] total.pkl saved: {len(samples)} proteins")
 
 
 if __name__ == '__main__':

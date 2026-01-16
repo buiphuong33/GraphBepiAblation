@@ -1,3 +1,4 @@
+#train.py
 import os
 import torch
 import random
@@ -49,10 +50,9 @@ if args.fold==-1:
     
 log_name=f'{args.dataset}_{args.tag}'
 metrics=METRICS(device)
-model=GraphBepi(
-    feat_dim=2560,                     # esm2 representation dim
-    hidden_dim=args.hidden,            # hidden representation dim
-    exfeat_dim=13,                     # dssp feature dim
+model=GraphBepi(     
+    dssp_dim=13,               # dssp feature dim
+    hidden_dim=args.hidden,                                
     edge_dim=51,                       # edge feature dim
     augment_eps=0.05,                  # random noise rate
     dropout=0.2,

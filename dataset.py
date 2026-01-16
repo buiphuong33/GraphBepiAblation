@@ -1,5 +1,5 @@
+#dataset.py
 import os
-import esm
 import torch
 import warnings
 import argparse
@@ -54,14 +54,8 @@ class PDB(Dataset):
             name = self.samples[i].name
             tbar.set_postfix(chain=name)
 
-            feat_path = f"{self.root}/feat/{name}_esm2.ts"
             dssp_path = f"{self.root}/dssp/{name}.npy"
             graph_path = f"{self.root}/graph/{name}.npz"
-
-            # thiếu feat → skip
-            if not os.path.exists(feat_path):
-                print(f"[SKIP] Missing feat: {name}")
-                continue
 
             # thiếu dssp → skip
             if not os.path.exists(dssp_path):
@@ -69,7 +63,6 @@ class PDB(Dataset):
                 continue
 
             try:
-                self.samples[i].load_feat(self.root)
                 self.samples[i].load_dssp(self.root)
                 self.samples[i].load_adj(self.root, self_cycle)
             except Exception as e:
@@ -82,7 +75,7 @@ class PDB(Dataset):
         return len(self.data)
     def __getitem__(self,idx):
         seq=self.data[idx]
-        feat=torch.cat([seq.feat,seq.dssp],1)
+        feat=seq.dssp
         return {
             'feat':feat,
             'label':seq.label,
