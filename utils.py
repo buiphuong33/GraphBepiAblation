@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from tqdm import tqdm,trange
 from preprocess import *
 from graph_construction import calcPROgraph
+from dataset_no_esm import Sample
 
 # ==== Added robust PDB downloader (GraphBepi Kaggle fix) ====
 import requests, time, gzip, shutil, io
