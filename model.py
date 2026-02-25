@@ -27,16 +27,31 @@ class GraphBepi(pl.LightningModule):
         self.lr = lr
         self.cls = 1
         bias=False
-        self.W_v = nn.Linear(feat_dim, hidden_dim, bias=bias)
-        self.W_u1 = AE(exfeat_dim,hidden_dim,hidden_dim, bias=bias)
+        self.use_exfeat = exfeat_dim > 0
+        self.esm_dim = feat_dim if not self.use_exfeat else feat_dim - exfeat_dim
+
+        self.W_v = nn.Linear(self.esm_dim, hidden_dim, bias=bias)
+
+        if self.use_exfeat:
+            self.W_u1 = AE(exfeat_dim, hidden_dim, hidden_dim, bias=bias)
+            gat_input_dim = 2 * hidden_dim
+            mlp_input_dim = 3 * hidden_dim
+        else:
+            gat_input_dim = hidden_dim
+            mlp_input_dim = 2 * hidden_dim
+
         self.edge_linear=nn.Sequential(
             nn.Linear(edge_dim,hidden_dim//4, bias=True),
             nn.ELU(),
         )
-        self.gat = EGAT(2*hidden_dim, hidden_dim, hidden_dim//4, dropout)
+        self.gat = EGAT(gat_input_dim, hidden_dim, hidden_dim//4, dropout)
+        #self.W_v = nn.Linear(feat_dim, hidden_dim, bias=bias)
+        #self.W_u1 = AE(exfeat_dim,hidden_dim,hidden_dim, bias=bias)
+        
+        #self.gat = EGAT(2*hidden_dim, hidden_dim, hidden_dim//4, dropout)
         # output
         self.mlp=nn.Sequential(
-            nn.Linear(4*hidden_dim,hidden_dim,bias=True),
+            nn.Linear(mlp_input_dim,hidden_dim,bias=True),
             nn.ReLU(),
             nn.Linear(hidden_dim,1,bias=True),
             nn.Sigmoid()
@@ -55,17 +70,36 @@ class GraphBepi(pl.LightningModule):
             aug[~mask]=0
             V = V+self.augment_eps * aug
         mask=mask.sum(1)
-        feats, exfeats = self.W_v(V[:,:,:-self.exfeat_dim]), self.W_u1(V[:,:,-self.exfeat_dim:])
+        if self.use_exfeat:
+            feats = self.W_v(V[:, :, :self.esm_dim])
+            exfeats = self.W_u1(V[:, :, self.esm_dim:])
+        else:
+            feats = self.W_v(V)
         x_gcns = []
         for i in range(len(V)):
             E = self.edge_linear(edge[i]).permute(2,0,1)
-            x1, x2 = feats[i,:mask[i]], exfeats[i,:mask[i]]
-            x_gcn = torch.cat([x1, x2], -1)
-            x_gcn, _ = self.gat(x_gcn, E)
+            if self.use_exfeat:
+                x1 = feats[i,:mask[i]]
+                x2 = exfeats[i,:mask[i]]
+                x_gcn_input = torch.cat([x1, x2], -1)
+            else:
+                x_gcn_input = feats[i,:mask[i]]
+
+            x_gcn, _ = self.gat(x_gcn_input, E)
             x_gcns.append(x_gcn)
 
         # No biLSTM: use W_v / W_u1 outputs directly
-        x_attns = [torch.cat([feats[i,:mask[i]], exfeats[i,:mask[i]]], -1) for i in range(len(V))]
+        #x_attns = [torch.cat([feats[i,:mask[i]], exfeats[i,:mask[i]]], -1) for i in range(len(V))]
+        if self.use_exfeat:
+            x_attns = [
+                torch.cat([feats[i,:mask[i]], exfeats[i,:mask[i]]], -1)
+                for i in range(len(V))
+            ]
+        else:
+            x_attns = [
+                feats[i,:mask[i]]
+                for i in range(len(V))
+            ]
         h = [torch.cat([x_attn, x_gcn], -1) for x_attn, x_gcn in zip(x_attns, x_gcns)]
         h = torch.cat(h, 0)
         return self.mlp(h)
@@ -84,16 +118,39 @@ class GraphBepi(pl.LightningModule):
             V = pad_sequence(V, batch_first=True, padding_value=0).float()
             mask = V.sum(-1) != 0
             mask_lens = mask.sum(1)
-            feats, exfeats = self.W_v(V[:,:,:-self.exfeat_dim]), self.W_u1(V[:,:,-self.exfeat_dim:])
+            #feats, exfeats = self.W_v(V[:,:,:-self.exfeat_dim]), self.W_u1(V[:,:,-self.exfeat_dim:])
+            if self.use_exfeat:
+                feats = self.W_v(V[:, :, :self.esm_dim])
+                exfeats = self.W_u1(V[:, :, self.esm_dim:])
+            else:
+                feats = self.W_v(V)
             x_gcns = []
             for i in range(len(V)):
                 E = self.edge_linear(edge[i]).permute(2,0,1)
-                x1, x2 = feats[i,:mask_lens[i]], exfeats[i,:mask_lens[i]]
-                x_gcn, _ = self.gat(torch.cat([x1, x2], -1), E)
+                #x1, x2 = feats[i,:mask_lens[i]], exfeats[i,:mask_lens[i]]
+                #x_gcn, _ = self.gat(torch.cat([x1, x2], -1), E)
+                if self.use_exfeat:
+                    x1 = feats[i,:mask_lens[i]]
+                    x2 = exfeats[i,:mask_lens[i]]
+                    x_input = torch.cat([x1, x2], -1)
+                else:
+                    x_input = feats[i,:mask_lens[i]]
+
+                x_gcn, _ = self.gat(x_input, E)
                 x_gcns.append(x_gcn)
 
             # No biLSTM: use feats and exfeats directly
-            x_attns = [torch.cat([feats[i,:mask_lens[i]], exfeats[i,:mask_lens[i]]], -1) for i in range(len(V))]
+            #x_attns = [torch.cat([feats[i,:mask_lens[i]], exfeats[i,:mask_lens[i]]], -1) for i in range(len(V))]
+            if self.use_exfeat:
+                x_attns = [
+                    torch.cat([feats[i,:mask_lens[i]], exfeats[i,:mask_lens[i]]], -1)
+                    for i in range(len(V))
+                ]
+            else:
+                x_attns = [
+                    feats[i,:mask_lens[i]]
+                    for i in range(len(V))
+                ]
             h_list = [torch.cat([x_attn, x_gcn], -1) for x_attn, x_gcn in zip(x_attns, x_gcns)]
         if was_train:
             self.train()
@@ -109,14 +166,24 @@ class GraphBepi(pl.LightningModule):
             V = pad_sequence(V, batch_first=True, padding_value=0).float()
             mask = V.sum(-1) != 0
             mask_lens = mask.sum(1)
-            feats = self.W_v(V[:,:,:-self.exfeat_dim])
-            exfeats = self.W_u1(V[:,:,-self.exfeat_dim:])
+            #feats = self.W_v(V[:,:,:-self.exfeat_dim])
+            #exfeats = self.W_u1(V[:,:,-self.exfeat_dim:])
+            if self.use_exfeat:
+                feats = self.W_v(V[:, :, :self.esm_dim])
+                exfeats = self.W_u1(V[:, :, self.esm_dim:])
+            else:
+                feats = self.W_v(V)
             gcn_outs = []
             for i in range(len(V)):
                 E = self.edge_linear(edge[i]).permute(2,0,1)
-                x1 = feats[i,:mask_lens[i]]
-                x2 = exfeats[i,:mask_lens[i]]
-                x = torch.cat([x1, x2], -1)
+
+                if self.use_exfeat:
+                    x1 = feats[i,:mask_lens[i]]
+                    x2 = exfeats[i,:mask_lens[i]]
+                    x = torch.cat([x1, x2], -1)
+                else:
+                    x = feats[i,:mask_lens[i]]
+
                 x_gcn, _ = self.gat(x, E)
                 gcn_outs.append(x_gcn)
         if was_train:
