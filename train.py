@@ -37,7 +37,7 @@ args = parser.parse_args()
 
 device='cpu' if args.gpu==-1 else f'cuda:{args.gpu}'
 seed_everything(args.seed)
-root=f'./data/{args.dataset}'
+root=f'{args.dataset}'
 
 trainset=PDB(mode='train',fold=args.fold,root=root)
 valset=PDB(mode='val',fold=args.fold,root=root)
