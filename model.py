@@ -33,9 +33,7 @@ class GraphBepi(pl.LightningModule):
             nn.Linear(edge_dim,hidden_dim//4, bias=True),
             nn.ELU(),
         )
-        self.gat=EGAT(2*hidden_dim,hidden_dim,hidden_dim//4,dropout)
-        self.lstm1 = nn.LSTM(hidden_dim,hidden_dim//2,3,batch_first=True,bidirectional=True,dropout=dropout)
-        self.lstm2 = nn.LSTM(hidden_dim,hidden_dim//2,3,batch_first=True,bidirectional=True,dropout=dropout)
+        self.gat = EGAT(2*hidden_dim, hidden_dim, hidden_dim//4, dropout)
         # output
         self.mlp=nn.Sequential(
             nn.Linear(4*hidden_dim,hidden_dim,bias=True),
@@ -57,23 +55,19 @@ class GraphBepi(pl.LightningModule):
             aug[~mask]=0
             V = V+self.augment_eps * aug
         mask=mask.sum(1)
-        feats,exfeats=self.W_v(V[:,:,:-self.exfeat_dim]),self.W_u1(V[:,:,-self.exfeat_dim:])
-        x_gcns=[]
+        feats, exfeats = self.W_v(V[:,:,:-self.exfeat_dim]), self.W_u1(V[:,:,-self.exfeat_dim:])
+        x_gcns = []
         for i in range(len(V)):
-            E=self.edge_linear(edge[i]).permute(2,0,1)
-            x1,x2=feats[i,:mask[i]],exfeats[i,:mask[i]]
-            x_gcn=torch.cat([x1,x2],-1)
-            x_gcn,E=self.gat(x_gcn,E)
+            E = self.edge_linear(edge[i]).permute(2,0,1)
+            x1, x2 = feats[i,:mask[i]], exfeats[i,:mask[i]]
+            x_gcn = torch.cat([x1, x2], -1)
+            x_gcn, _ = self.gat(x_gcn, E)
             x_gcns.append(x_gcn)
-        feats=pack_padded_sequence(feats,mask.cpu(),True,False)
-        exfeats=pack_padded_sequence(exfeats,mask.cpu(),True,False)
-        feats=pad_packed_sequence(self.lstm1(feats)[0],True)[0]
-        exfeats=pad_packed_sequence(self.lstm2(exfeats)[0],True)[0]
-        x_attns=torch.cat([feats,exfeats],-1)
-        
-        x_attns=[x_attns[i,:mask[i]] for i in range(len(x_attns))]
-        h=[torch.cat([x_attn,x_gcn],-1) for x_attn,x_gcn in zip(x_attns,x_gcns)]
-        h=torch.cat(h,0)
+
+        # No biLSTM: use W_v / W_u1 outputs directly
+        x_attns = [torch.cat([feats[i,:mask[i]], exfeats[i,:mask[i]]], -1) for i in range(len(V))]
+        h = [torch.cat([x_attn, x_gcn], -1) for x_attn, x_gcn in zip(x_attns, x_gcns)]
+        h = torch.cat(h, 0)
         return self.mlp(h)
 
     def embed(self, V, edge):
@@ -88,23 +82,19 @@ class GraphBepi(pl.LightningModule):
         self.eval()
         with torch.no_grad():
             V = pad_sequence(V, batch_first=True, padding_value=0).float()
-            mask=V.sum(-1)!=0
-            mask_lens=mask.sum(1)
-            feats,exfeats=self.W_v(V[:,:,:-self.exfeat_dim]),self.W_u1(V[:,:,-self.exfeat_dim:])
-            x_gcns=[]
+            mask = V.sum(-1) != 0
+            mask_lens = mask.sum(1)
+            feats, exfeats = self.W_v(V[:,:,:-self.exfeat_dim]), self.W_u1(V[:,:,-self.exfeat_dim:])
+            x_gcns = []
             for i in range(len(V)):
-                E=self.edge_linear(edge[i]).permute(2,0,1)
-                x1,x2=feats[i,:mask_lens[i]],exfeats[i,:mask_lens[i]]
-                x_gcn=torch.cat([x1,x2],-1)
-                x_gcn,_=self.gat(x_gcn,E)
+                E = self.edge_linear(edge[i]).permute(2,0,1)
+                x1, x2 = feats[i,:mask_lens[i]], exfeats[i,:mask_lens[i]]
+                x_gcn, _ = self.gat(torch.cat([x1, x2], -1), E)
                 x_gcns.append(x_gcn)
-            feats_pack=pack_padded_sequence(feats,mask_lens.cpu(),True,False)
-            exfeats_pack=pack_padded_sequence(exfeats,mask_lens.cpu(),True,False)
-            feats_lstm=pad_packed_sequence(self.lstm1(feats_pack)[0],True)[0]
-            exfeats_lstm=pad_packed_sequence(self.lstm2(exfeats_pack)[0],True)[0]
-            x_attns=torch.cat([feats_lstm,exfeats_lstm],-1)
-            x_attns=[x_attns[i,:mask_lens[i]] for i in range(len(x_attns))]
-            h_list=[torch.cat([x_attn,x_gcn],-1) for x_attn,x_gcn in zip(x_attns,x_gcns)]
+
+            # No biLSTM: use feats and exfeats directly
+            x_attns = [torch.cat([feats[i,:mask_lens[i]], exfeats[i,:mask_lens[i]]], -1) for i in range(len(V))]
+            h_list = [torch.cat([x_attn, x_gcn], -1) for x_attn, x_gcn in zip(x_attns, x_gcns)]
         if was_train:
             self.train()
         return h_list
