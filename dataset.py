@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader,Dataset
 warnings.simplefilter('ignore')
 class PDB(Dataset):
     def __init__(
-        self,mode='train',fold=-1,root='./data/BCE_633',self_cycle=False, use_dssp=True
+        self,mode='train',fold=-1,root='./data/BCE_633',self_cycle=False, use_dssp=False
     ):
         self.root=root
         assert mode in ['train','val','test']
