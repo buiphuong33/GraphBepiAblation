@@ -1,5 +1,5 @@
-#dataset.py
 import os
+import esm
 import torch
 import warnings
 import argparse
@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader,Dataset
 warnings.simplefilter('ignore')
 class PDB(Dataset):
     def __init__(
-        self,mode='train',fold=-1,root='./data/BCE_633',self_cycle=False
+        self,mode='train',fold=-1,root='./data/BCE_633',self_cycle=False, use_dssp=True
     ):
         self.root=root
         assert mode in ['train','val','test']
@@ -22,10 +22,16 @@ class PDB(Dataset):
             with open(f'{self.root}/test.pkl','rb') as f:
                 self.samples=pk.load(f)
         self.data = []
-
+        self.use_dssp = use_dssp
+        # =======================
+        # CASE 1: TEST MODE (external test, no CV)
+        # =======================
         if mode == 'test' and not os.path.exists(f'{self.root}/cross-validation.npy'):
             order = list(range(len(self.samples)))
 
+        # =======================
+        # CASE 2: TRAIN / VAL with CV
+        # =======================
         else:
             if not os.path.exists(f'{self.root}/cross-validation.npy'):
                 raise FileNotFoundError(
@@ -54,8 +60,14 @@ class PDB(Dataset):
             name = self.samples[i].name
             tbar.set_postfix(chain=name)
 
+            feat_path = f"{self.root}/feat/{name}_esm2.ts"
             dssp_path = f"{self.root}/dssp/{name}.npy"
             graph_path = f"{self.root}/graph/{name}.npz"
+
+            # thiếu feat → skip
+            if not os.path.exists(feat_path):
+                print(f"[SKIP] Missing feat: {name}")
+                continue
 
             # thiếu dssp → skip
             if not os.path.exists(dssp_path):
@@ -63,6 +75,7 @@ class PDB(Dataset):
                 continue
 
             try:
+                self.samples[i].load_feat(self.root)
                 self.samples[i].load_dssp(self.root)
                 self.samples[i].load_adj(self.root, self_cycle)
             except Exception as e:
@@ -75,7 +88,10 @@ class PDB(Dataset):
         return len(self.data)
     def __getitem__(self,idx):
         seq=self.data[idx]
-        feat=seq.dssp
+        if self.use_dssp:
+            feat = torch.cat([seq.feat, seq.dssp], 1)
+        else:
+            feat = seq.feat
         return {
             'feat':feat,
             'label':seq.label,
@@ -83,7 +99,54 @@ class PDB(Dataset):
             'edge':seq.edge,
         }
         
-
+#if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--root', type=str, default='./data/BCE_633', help='dataset path')
+#     parser.add_argument('--gpu', type=int, default=0, help='gpu.')
+#     args = parser.parse_args()
+#     root = args.root
+#     device='cpu' if args.gpu==-1 else f'cuda:{args.gpu}'
+    
+#     os.system(f'cd {root} && mkdir PDB purePDB feat dssp graph')
+#     # model=None
+#     model,_=esm.pretrained.esm2_t36_3B_UR50D()
+#     model=model.to(device)
+#     model.eval()
+#     train='total.csv'
+#     initial(train,root,model,device)
+#     with open(f'{root}/total.pkl','rb') as f:
+#         dataset=pk.load(f)
+#     dates={i.name:i.date for i in dataset}
+# #     with open(f'{root}/date.pkl','rb') as f:
+# #         dates=pk.load(f)
+#     filt_data=[]
+#     for i in dataset:
+#         if len(i)<1024 and i.label.sum()>0:
+#             filt_data.append(i)
+#     month={'JAN':1,'FEB':2,'MAR':3,'APR':4,'MAY':5,'JUN':6,'JUL':7,'AUG':8,'SEP':9,'OCT':10,'NOV':11,'DEC':12}
+#     trainset,valset,testset=[],[],[]
+#     D,M,Y=[],[],[]
+#     test=20210401
+#     dates_=[]
+#     for i in filt_data:
+#         d,m,y=dates[i.name]
+#         d,m,y=int(d),month[m],int(y)
+#         if y<23:
+#             y+=2000
+#         else:
+#             y+=1900
+#         date=y*10000+m*100+d
+#         if date<test:
+#             dates_.append(date)
+#             trainset.append(i)
+#         else:
+#             testset.append(i)
+#     with open(f'{root}/train.pkl','wb') as f:
+#         pk.dump(trainset,f)
+#     with open(f'{root}/test.pkl','wb') as f:
+#         pk.dump(testset,f)
+#     idx=np.array(dates_).argsort()
+#     np.save(f'{root}/cross-validation.npy',idx)
 if __name__ == "__main__":
     import pickle as pk
     import numpy as np
@@ -156,6 +219,21 @@ if __name__ == "__main__":
     trainset, testset, DATES_FOR_CV = [], [], []
     TEST_CUTOFF = 20210401
 
+    # for it in filt_data:
+    #     d, m, y = dates[it.name]
+    #     d = int(d)
+    #     m = month[str(m).upper()]
+    #     y = int(y); y = 2000 + y if y < 23 else 1900 + y
+    #     date_int = y*10000 + m*100 + d
+
+    #     if date_int < TEST_CUTOFF:
+    #         DATES_FOR_CV.append(date_int)
+    #         trainset.append(it)
+    #     else:
+    #         testset.append(it)
+
+    
+
     TEST_CUTOFF = 20210401  # yyyymmdd
     dates_ = []
     trainset, testset = [], []
@@ -204,4 +282,3 @@ if __name__ == "__main__":
     idx = np.array(dates_).argsort()
     np.save(f'{root}/cross-validation.npy', idx)
     print(f"[INFO] Done. Train: {len(trainset)}, Test: {len(testset)}, CV idx shape: {idx.shape}")
-
